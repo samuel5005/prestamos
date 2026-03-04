@@ -71,9 +71,9 @@ tr:hover td{background:#EBF5FB}
 INICIO = BASE.replace("{% block content %}{% endblock %}", """
 <h2>Panel Principal</h2>
 <div class="cards">
-  <div class="card"><div class="val green">${{ resumen.total_prestado:,.0f }}</div><div class="lbl">Total Prestado</div></div>
+  <div class="card"><div class="val green">${{ "{:,.0f}".format(resumen.total_prestado) }}</div><div class="lbl">Total Prestado</div></div>
   <div class="card"><div class="val blue">{{ resumen.activos }}</div><div class="lbl">Prestamos Activos</div></div>
-  <div class="card"><div class="val orange">${{ resumen.capital_cobrar:,.0f }}</div><div class="lbl">Capital por Cobrar</div></div>
+  <div class="card"><div class="val orange">${{ "{:,.0f}".format(resumen.capital_cobrar) }}</div><div class="lbl">Capital por Cobrar</div></div>
   <div class="card"><div class="val red">{{ resumen.vencidos }}</div><div class="lbl">Vencidos</div></div>
 </div>
 <h2>Prestamos Activos</h2>
