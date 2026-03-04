@@ -18,6 +18,58 @@ def get_db():
     conn = psycopg2.connect(db_url)
     return conn
 
+# ¡AGREGA ESTAS LÍNEAS AQUÍ!
+print("🔄 Creando tablas en PostgreSQL...")
+conn = get_db()
+cur = conn.cursor()
+
+# Crear tabla clientes
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS clientes (
+        id SERIAL PRIMARY KEY,
+        nombre TEXT NOT NULL,
+        telefono TEXT
+    )
+""")
+
+# Crear tabla prestamos
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS prestamos (
+        id SERIAL PRIMARY KEY,
+        cliente_id INTEGER REFERENCES clientes(id),
+        cliente TEXT NOT NULL,
+        telefono TEXT,
+        monto FLOAT,
+        interes FLOAT,
+        plazo INTEGER,
+        fecha TEXT,
+        fecha_vence TEXT,
+        capital_actual FLOAT,
+        ultima_fecha_pago TEXT,
+        total_pagado FLOAT DEFAULT 0,
+        total_interes_pagado FLOAT DEFAULT 0,
+        estado TEXT DEFAULT 'activo'
+    )
+""")
+
+# Crear tabla pagos
+cur.execute("""
+    CREATE TABLE IF NOT EXISTS pagos (
+        id SERIAL PRIMARY KEY,
+        prestamo_id INTEGER REFERENCES prestamos(id),
+        fecha TEXT,
+        pago_total FLOAT,
+        interes FLOAT,
+        abono_capital FLOAT,
+        capital_tras_pago FLOAT
+    )
+""")
+
+conn.commit()
+cur.close()
+conn.close()
+print("✅ Tablas creadas correctamente")
+
 def init_db():
     conn = get_db()
     cur = conn.cursor()
