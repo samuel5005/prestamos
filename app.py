@@ -1,20 +1,91 @@
 from flask import Flask, render_template_string, request, redirect, url_for
-import json, os
+import os
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import json
 
 app = Flask(__name__)
-DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.json")
+
+# Conexión a PostgreSQL desde variable de entorno de Railway
+DATABASE_URL = os.environ.get('DATABASE_URL')
+
+def get_db():
+    conn = psycopg2.connect(DATABASE_URL)
+    conn.autocommit = True
+    return conn
+
+def init_db():
+    conn = get_db()
+    cur = conn.cursor()
+    
+    # Crear tablas si no existen
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS clientes (
+            id SERIAL PRIMARY KEY,
+            nombre TEXT NOT NULL,
+            telefono TEXT
+        )
+    """)
+    
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS prestamos (
+            id SERIAL PRIMARY KEY,
+            cliente_id INTEGER REFERENCES clientes(id),
+            cliente TEXT NOT NULL,
+            telefono TEXT,
+            monto FLOAT,
+            interes FLOAT,
+            plazo INTEGER,
+            fecha TEXT,
+            fecha_vence TEXT,
+            capital_actual FLOAT,
+            ultima_fecha_pago TEXT,
+            total_pagado FLOAT DEFAULT 0,
+            total_interes_pagado FLOAT DEFAULT 0,
+            estado TEXT DEFAULT 'activo'
+        )
+    """)
+    
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS pagos (
+            id SERIAL PRIMARY KEY,
+            prestamo_id INTEGER REFERENCES prestamos(id),
+            fecha TEXT,
+            pago_total FLOAT,
+            interes FLOAT,
+            abono_capital FLOAT,
+            capital_tras_pago FLOAT
+        )
+    """)
+    cur.close()
+    conn.close()
 
 def cargar():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {"clientes": [], "prestamos": []}
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    
+    # Cargar clientes
+    cur.execute("SELECT * FROM clientes")
+    clientes = cur.fetchall()
+    
+    # Cargar prestamos con sus pagos
+    cur.execute("SELECT * FROM prestamos")
+    prestamos = cur.fetchall()
+    
+    for p in prestamos:
+        cur.execute("SELECT * FROM pagos WHERE prestamo_id = %s", (p['id'],))
+        p['pagos'] = cur.fetchall()
+    
+    cur.close()
+    conn.close()
+    
+    return {"clientes": clientes, "prestamos": prestamos}
 
 def guardar(datos):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(datos, f, ensure_ascii=False, indent=2)
+    # Esta función ya no se usa con PostgreSQL
+    pass
 
 def interes_mes(capital, tasa):
     return round(capital * (tasa / 100), 2)
@@ -205,41 +276,39 @@ def inicio():
 @app.route("/nuevo", methods=["GET","POST"])
 def nuevo():
     if request.method == "POST":
-        datos = cargar()
+        conn = get_db()
+        cur = conn.cursor()
+        
         nombre = request.form["cliente"].strip()
         tel = request.form["telefono"].strip()
         monto = float(request.form["monto"])
         tasa = float(request.form["interes"])
         plazo = int(request.form["plazo"])
         fecha = request.form["fecha"]
-        cid = None
-        for c in datos["clientes"]:
-            if c["nombre"].lower() == nombre.lower():
-                cid = c["id"]
-                break
-        if not cid:
-            cid = len(datos["clientes"]) + 1
-            datos["clientes"].append({"id": cid, "nombre": nombre, "telefono": tel})
+        
+        # Buscar o crear cliente
+        cur.execute("SELECT id FROM clientes WHERE nombre = %s", (nombre,))
+        cliente = cur.fetchone()
+        
+        if cliente:
+            cid = cliente[0]
+        else:
+            cur.execute("INSERT INTO clientes (nombre, telefono) VALUES (%s, %s) RETURNING id", (nombre, tel))
+            cid = cur.fetchone()[0]
+        
         fecha_vence = (datetime.strptime(fecha, "%Y-%m-%d") + relativedelta(months=plazo)).strftime("%Y-%m-%d")
-        pid = len(datos["prestamos"]) + 1
-        datos["prestamos"].append({
-            "id": pid,
-            "cliente": nombre,
-            "cliente_id": cid,
-            "telefono": tel,
-            "monto": monto,
-            "interes": tasa,
-            "plazo": plazo,
-            "fecha": fecha,
-            "fecha_vence": fecha_vence,
-            "capital_actual": monto,
-            "ultima_fecha_pago": None,
-            "total_pagado": 0.0,
-            "total_interes_pagado": 0.0,
-            "estado": "activo",
-            "pagos": []
-        })
-        guardar(datos)
+        
+        cur.execute("""
+            INSERT INTO prestamos 
+            (cliente_id, cliente, telefono, monto, interes, plazo, fecha, fecha_vence, capital_actual, total_pagado, total_interes_pagado, estado)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """, (cid, nombre, tel, monto, tasa, plazo, fecha, fecha_vence, monto, 0, 0, 'activo'))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
         return redirect(url_for("inicio"))
     return render_template_string(NUEVO, hoy=date.today().isoformat())
 
@@ -273,34 +342,47 @@ def pagos():
     activo = next((p for p in activos if p["id"] == sel), None)
     
     if request.method == "POST" and "registrar" in request.form:
+        conn = get_db()
+        cur = conn.cursor()
+        
         pago = float(request.form["monto"])
-        p = next(x for x in datos["prestamos"] if x["id"] == sel)
-        i = interes_mes(p["capital_actual"], p["interes"])
+        i = interes_mes(activo["capital_actual"], activo["interes"])
         
         if pago >= i:
             abono = round(pago - i, 2)
             int_pag = i
-            p["capital_actual"] = round(max(p["capital_actual"] - abono, 0), 2)
+            nuevo_capital = round(max(activo["capital_actual"] - abono, 0), 2)
         else:
             abono = 0
             int_pag = pago
+            nuevo_capital = activo["capital_actual"]
         
-        p["total_pagado"] = round(p["total_pagado"] + pago, 2)
-        p["total_interes_pagado"] = round(p["total_interes_pagado"] + int_pag, 2)
-        p["ultima_fecha_pago"] = date.today().isoformat()
+        total_pagado = activo["total_pagado"] + pago
+        total_interes = activo["total_interes_pagado"] + int_pag
+        estado = 'pagado' if nuevo_capital <= 0 else 'activo'
         
-        p["pagos"].append({
-            "fecha": date.today().isoformat(),
-            "pago_total": pago,
-            "interes": int_pag,
-            "abono_capital": abono,
-            "capital_tras_pago": p["capital_actual"]
-        })
+        # Actualizar préstamo
+        cur.execute("""
+            UPDATE prestamos SET 
+                capital_actual = %s,
+                total_pagado = %s,
+                total_interes_pagado = %s,
+                ultima_fecha_pago = %s,
+                estado = %s
+            WHERE id = %s
+        """, (nuevo_capital, total_pagado, total_interes, date.today().isoformat(), estado, sel))
         
-        if p["capital_actual"] <= 0:
-            p["estado"] = "pagado"
+        # Registrar pago
+        cur.execute("""
+            INSERT INTO pagos 
+            (prestamo_id, fecha, pago_total, interes, abono_capital, capital_tras_pago)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (sel, date.today().isoformat(), pago, int_pag, abono, nuevo_capital))
         
-        guardar(datos)
+        conn.commit()
+        cur.close()
+        conn.close()
+        
         return redirect(url_for("pagos"))
     
     historial = []
@@ -343,5 +425,7 @@ def reportes():
     return render_template_string(REPORTES, prestamos=ps, resumen=resumen, hoy=date.today().isoformat())
 
 if __name__ == "__main__":
+    # Inicializar base de datos
+    init_db()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
