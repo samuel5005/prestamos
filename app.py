@@ -12,8 +12,18 @@ app = Flask(__name__)
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
 def get_db():
-    conn = psycopg2.connect(DATABASE_URL)
-    conn.autocommit = True
+    import os
+    print("=== DEBUG: Verificando DATABASE_URL ===")
+    db_url = os.environ.get('DATABASE_URL')
+    if db_url:
+        print(f"✅ DATABASE_URL encontrada: {db_url[:30]}...")  # Muestra solo inicio
+    else:
+        print("❌ DATABASE_URL NO está configurada")
+        # Usar URL directa como respaldo temporal
+        db_url = "postgresql://postgres:BKAhDzmBtJxPquRcicvZAHHATiTDcfrX@caboose.proxy.rlwy.net:58358/railway"
+        print(f"🔧 Usando URL de respaldo: {db_url[:30]}...")
+    
+    conn = psycopg2.connect(db_url)
     return conn
 
 def init_db():
